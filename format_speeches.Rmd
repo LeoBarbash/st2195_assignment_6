@@ -1,0 +1,82 @@
+---
+title: "format_speeches"
+author: "Lev Barbash"
+date: "2023-08-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1
+
+Load and merge the datasets keeping all information available for the dates in which there is a measurement in “fx.csv”:
+
+```{r load_merge}
+library(dplyr)
+speeches <- read.csv("speeches.csv", sep='|', quote = "", row.names = NULL, 
+                 stringsAsFactors = FALSE)
+speeches <- speeches[speeches$date >= '1999-01-04', ]
+fx <- read.csv("fx.csv", sep=',')
+fx <- fx[, c('TIME_PERIOD', 'OBS_VALUE')]
+merged <- merge(speeches, fx, by.x='date', by.y='TIME_PERIOD', all.x=TRUE)
+merged <- merged[!is.na(merged$date),]
+```
+## 3
+
+Handle missing observations for the exchange rate, if any. This should be done replacing any missing exchange rate with the latest information available. Whenever this cannot be done, the relevant entry should be removed entirely from the dataset:
+
+```{r handle_missing}
+merged$was_null <- 0
+merged$was_null[is.na(merged$OBS_VALUE)] <- 1
+old_dates <- merged$date[merged$was_null == 1]
+while (any(is.na(merged$OBS_VALUE))) {
+  merged$date[is.na(merged$OBS_VALUE)] <- as.character(as.Date(merged$date[is.na(merged$OBS_VALUE)]) - 1)
+  merged <- merged[, !(names(merged) %in% "OBS_VALUE")]
+  merged <- merge(merged, fx, by.x='date', by.y='TIME_PERIOD', all.x=TRUE)
+}
+merged$date[merged$was_null == 1] <- old_dates
+```
+## 4
+
+Calculate the exchange rate return. Extend the original dataset with the following variables: “good_news” (equal to 1 when the exchange rate return is larger than 0.5 percent, 0 otherwise) and “bad_news” (equal to 1 when the exchange rate return is lower than -0.5 percent, 0 otherwise):
+
+```{r exchange_rate_return}
+prev_val <- merged$OBS_VALUE[1:length(merged$OBS_VALUE)-1]
+merged$prev_OBS_VALUE <- c(NA, prev_val)
+merged$prev_OBS_VALUE[is.na(merged$prev_OBS_VALUE)] <- fx$OBS_VALUE[fx$TIME_PERIOD == '1999-01-13']
+merged$return <- (merged$OBS_VALUE - merged$prev_OBS_VALUE) / (merged$prev_OBS_VALUE / 100)
+merged$good_news <- 0
+merged$bad_news <- 0
+merged$good_news[merged$return >= 0.5] <- 1
+merged$bad_news[merged$return <= -0.5] <- 1
+```
+## 5
+
+Remove the entries for which contents column has NA values. Generate and store in csv the following tables:
+a. “good_indicators” – with the 20 most common words (excluding articles, prepositions and similar connectors) associated with entries wherein “good_news” is equal to 1;
+
+```{r good_indicators}
+library(tidytext)
+library(rlist)
+merged <- merged[!is.na(merged$contents), ]
+merged$contents <- tolower(merged$contents)
+stop_words <- data.frame(list.append(stopwords::stopwords("en", source = "snowball"), 'de', 'also', 'la', 'can', 'der'))
+colnames(stop_words) <- c('word')
+good_news_df <- data.frame(Text = merged$contents[merged$good_news == 1])
+good_inds <- good_news_df %>% unnest_tokens(output = word, input = Text)
+merged_good_inds  <- good_inds %>% anti_join(stop_words, by = join_by(word))
+good_inds_counts <- merged_good_inds  %>% count(word, sort = TRUE)
+head(good_inds_counts, 20)
+```
+
+b. “bad_indicators” – with the 20 most common words (excluding articles, prepositions and similar connectors) associated with entries wherein “bad_news” is equal to 1
+
+```{r bad_indicators}
+bad_news_df <- data.frame(Text = merged$contents[merged$bad_news == 1])
+bad_inds <- bad_news_df %>% unnest_tokens(output = word, input = Text)
+merged_bad_inds  <- bad_inds %>% anti_join(stop_words, by = join_by(word))
+bad_inds_counts <- merged_bad_inds  %>% count(word, sort = TRUE)
+head(bad_inds_counts, 20)
+```
